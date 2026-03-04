@@ -1,6 +1,16 @@
-__pycache__/
-*.pyc
+# Dependencies
+functions/node_modules/
+functions/lib/
+
+# Firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+
+# Environment
 .env
-*.json
-!requirements.txt
-.venv/
+.env.local
+
+# OS
+.DS_Store
