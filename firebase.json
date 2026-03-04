@@ -10,5 +10,43 @@
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
+  },
+  "hosting": {
+    "public": "public",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "/health",
+        "run": {
+          "serviceId": "health",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/sendNotification",
+        "run": {
+          "serviceId": "sendnotification",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/registerToken",
+        "run": {
+          "serviceId": "registertoken",
+          "region": "us-central1"
+        }
+      },
+      {
+        "source": "/exchangeGoogleToken",
+        "run": {
+          "serviceId": "exchangegoogletoken",
+          "region": "us-central1"
+        }
+      }
+    ]
   }
 }

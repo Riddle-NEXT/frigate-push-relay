@@ -26,6 +26,7 @@ import {
 
 initializeApp();
 
+
 const TOKEN_HASH_PEPPER = defineSecret("TOKEN_HASH_PEPPER");
 const GOOGLE_CLIENT_SECRET_PARAM = defineSecret("GOOGLE_CLIENT_SECRET");
 const GOOGLE_CLIENT_ID_PARAM = defineString("GOOGLE_CLIENT_ID", {
@@ -45,6 +46,13 @@ const OPTIONS = {
   timeoutSeconds: 30,
   secrets: [TOKEN_HASH_PEPPER],
 };
+
+/**
+ * health returns a simple 200 OK for relay reachability checks.
+ */
+export const health = onRequest({...OPTIONS, secrets: []}, async (_req, res) => {
+  res.status(200).json({status: "ok", service: "frigate-push-relay"});
+});
 
 function parseRegisterTokenBody(body: unknown): RegisterTokenRequest {
   if (!body || typeof body !== "object") {
