@@ -27,6 +27,10 @@ import {
 initializeApp();
 
 const TOKEN_HASH_PEPPER = defineSecret("TOKEN_HASH_PEPPER");
+const GOOGLE_CLIENT_SECRET_PARAM = defineSecret("GOOGLE_CLIENT_SECRET");
+const GOOGLE_CLIENT_ID_PARAM = defineString("GOOGLE_CLIENT_ID", {
+  default: "REDACTED_GOOGLE_CLIENT_ID",
+});
 const RATE_LIMIT_PER_MINUTE = defineInt("RATE_LIMIT_PER_MINUTE", {default: 100});
 const TOKEN_TTL_DAYS = defineInt("TOKEN_TTL_DAYS", {default: 30});
 const USAGE_TTL_DAYS = defineInt("USAGE_TTL_DAYS", {default: 120});
@@ -445,7 +449,7 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
           body: body.body ?? "New Frigate event",
         } : undefined,
         data: {
-          payload: body.encryptedPayload,
+          encrypted: body.encryptedPayload,
           bridgeId: body.bridgeId,
           deviceId: snapshot.id,
         },
@@ -523,3 +527,65 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
     res.status(500).json({error: "Internal server error"});
   }
 });
+
+/**
+ * exchangeGoogleToken proxies the OAuth authorization-code exchange to keep
+ * GOOGLE_CLIENT_SECRET server-side. HASS calls this instead of Google directly.
+ */
+export const exchangeGoogleToken = onRequest(
+  {...OPTIONS, secrets: [TOKEN_HASH_PEPPER, GOOGLE_CLIENT_SECRET_PARAM]},
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({error: "Method not allowed"});
+      return;
+    }
+
+    const {code, redirectUri} = req.body as {code?: string; redirectUri?: string};
+    if (!code || !redirectUri) {
+      res.status(400).json({error: "Missing code or redirectUri"});
+      return;
+    }
+
+    // Basic sanity checks to prevent open-proxy abuse
+    if (typeof code !== "string" || code.length > 512) {
+      res.status(400).json({error: "Invalid code"});
+      return;
+    }
+    if (typeof redirectUri !== "string" || redirectUri.length > 256) {
+      res.status(400).json({error: "Invalid redirectUri"});
+      return;
+    }
+
+    try {
+      const params = new URLSearchParams({
+        client_id: GOOGLE_CLIENT_ID_PARAM.value(),
+        client_secret: GOOGLE_CLIENT_SECRET_PARAM.value(),
+        code,
+        grant_type: "authorization_code",
+        redirect_uri: redirectUri,
+      });
+
+      const response = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: {"Content-Type": "application/x-www-form-urlencoded"},
+        body: params.toString(),
+      });
+
+      const data = await response.json() as Record<string, unknown>;
+      if (!response.ok) {
+        logger.warn("exchangeGoogleToken upstream failed", {status: response.status});
+        res.status(400).json({error: "Token exchange failed"});
+        return;
+      }
+
+      res.status(200).json({
+        access_token: data.access_token,
+        token_type: data.token_type,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      logger.error("exchangeGoogleToken error", {reason: message});
+      res.status(500).json({error: "Internal server error"});
+    }
+  }
+);
