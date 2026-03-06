@@ -292,23 +292,31 @@ export const registerToken = onRequest(OPTIONS, async (req, res) => {
 
     await db.runTransaction(async (transaction) => {
       const bridgeSnapshot = await transaction.get(bridgeRef);
+      const existingBridge = bridgeSnapshot.exists ?
+        bridgeSnapshot.data() as BridgeRegistrationDoc :
+        undefined;
 
-      if (bridgeSnapshot.exists) {
-        const existing = bridgeSnapshot.data() as BridgeRegistrationDoc;
-        if (existing.userId !== identity.uid) {
-          throw new Error("bridgeId is already linked to another user");
-        }
+      if (
+        existingBridge?.bridgeTokenHash &&
+          existingBridge.bridgeTokenHash !== bridgeTokenHash &&
+          existingBridge.lastUsedAt
+      ) {
+        throw new Error("bridgeAuthToken does not match existing bridge registration");
       }
+
+      const effectiveBridgeTokenHash = existingBridge?.lastUsedAt ?
+        existingBridge.bridgeTokenHash :
+        bridgeTokenHash;
 
       transaction.set(
         bridgeRef,
         {
           bridgeId: body.bridgeId,
-          userId: identity.uid,
-          bridgeTokenHash,
-          createdAt: bridgeSnapshot.exists ? bridgeSnapshot.data()?.createdAt : Timestamp.now(),
+          userId: existingBridge?.userId ?? identity.uid,
+          bridgeTokenHash: effectiveBridgeTokenHash,
+          createdAt: existingBridge?.createdAt ?? Timestamp.now(),
           updatedAt: FieldValue.serverTimestamp(),
-          lastUsedAt: bridgeSnapshot.exists ? bridgeSnapshot.data()?.lastUsedAt ?? null : null,
+          lastUsedAt: existingBridge?.lastUsedAt ?? null,
           expiresAt,
         },
         {merge: true}
@@ -349,7 +357,12 @@ export const registerToken = onRequest(OPTIONS, async (req, res) => {
       userAgent: req.get("user-agent") ?? "unknown",
     });
 
-    if (message.includes("App Check") || message.includes("Bearer") || message.includes("linked")) {
+    if (
+      message.includes("App Check") ||
+      message.includes("Bearer") ||
+      message.includes("linked") ||
+      message.includes("bridgeAuthToken")
+    ) {
       res.status(401).json({error: message});
       return;
     }
@@ -436,6 +449,9 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
     const errors: string[] = [];
     const writeBatch = getFirestore().batch();
 
+    const notificationTitle = body.title ?? "Frigate Alert";
+    const notificationBody = body.body ?? "New Frigate event";
+
     for (const snapshot of targetSnapshots) {
       if (!snapshot.exists) {
         failed++;
@@ -452,10 +468,10 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
 
       const message: Message = {
         token: device.fcmToken,
-        notification: body.title || body.body ? {
-          title: body.title ?? "Frigate Alert",
-          body: body.body ?? "New Frigate event",
-        } : undefined,
+        notification: {
+          title: notificationTitle,
+          body: notificationBody,
+        },
         data: {
           encrypted: body.encryptedPayload,
           bridgeId: body.bridgeId,
@@ -467,6 +483,12 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
         apns: {
           headers: {
             "apns-priority": "10",
+            "apns-push-type": "alert",
+          },
+          payload: {
+            aps: {
+              sound: "default",
+            },
           },
         },
       };
