@@ -44,6 +44,7 @@ const OPTIONS = {
   region: "us-central1",
   memory: "256MiB" as const,
   timeoutSeconds: 30,
+  maxInstances: 20,
   secrets: [TOKEN_HASH_PEPPER],
 };
 
@@ -282,6 +283,17 @@ export const registerToken = onRequest(OPTIONS, async (req, res) => {
   try {
     const identity = await verifyAppIdentity(req);
     const body = parseRegisterTokenBody(req.body);
+    logger.info("registerToken request accepted", {
+      bridgeId: body.bridgeId,
+      deviceId: body.deviceId,
+      platform: body.platform,
+      uid: identity.uid,
+      appId: identity.appId,
+      hasAuthHeader: Boolean(req.get("authorization")),
+      hasAppCheckHeader: Boolean(req.get("X-Firebase-AppCheck")),
+      ip: req.ip,
+      userAgent: req.get("user-agent") ?? "unknown",
+    });
     const now = new Date();
     const db = getFirestore();
     const pepper = TOKEN_HASH_PEPPER.value();
@@ -347,6 +359,13 @@ export const registerToken = onRequest(OPTIONS, async (req, res) => {
       deviceId: body.deviceId,
       expiresAt: expiresAt.toDate().toISOString(),
     });
+    logger.info("registerToken success", {
+      bridgeId: body.bridgeId,
+      deviceId: body.deviceId,
+      uid: identity.uid,
+      appId: identity.appId,
+      expiresAt: expiresAt.toDate().toISOString(),
+    });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     logger.error("registerToken failed", {
@@ -389,6 +408,11 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
   );
 
   if (!validateBridgeOrigin(req, allowedOrigins)) {
+    logger.warn("sendNotification rejected: origin not allowed", {
+      origin: origin ?? "none",
+      ip: req.ip,
+      userAgent: req.get("user-agent") ?? "unknown",
+    });
     res.status(403).json({error: "Origin not allowed"});
     return;
   }
@@ -409,6 +433,14 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
 
   try {
     const body = parseSendNotificationBody(req.body);
+    logger.info("sendNotification request accepted", {
+      bridgeId: body.bridgeId,
+      requestedDevices: body.deviceIds?.length ?? 0,
+      hasAuthHeader: Boolean(req.get("authorization")),
+      origin: req.get("origin") ?? "none",
+      ip: req.ip,
+      userAgent: req.get("user-agent") ?? "unknown",
+    });
     if ((body.deviceIds?.length ?? 0) > MAX_BATCH_DEVICES.value()) {
       res.status(400).json({error: `deviceIds exceeds max batch size of ${MAX_BATCH_DEVICES.value()}`});
       return;
@@ -419,6 +451,10 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
     const bridgeSnapshot = await bridgeRef.get();
 
     if (!bridgeSnapshot.exists) {
+      logger.warn("sendNotification rejected: bridge not found", {
+        bridgeId: body.bridgeId,
+        requestedDevices: body.deviceIds?.length ?? 0,
+      });
       res.status(401).json({error: "Invalid bridge credentials"});
       return;
     }
@@ -426,11 +462,19 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
     const bridge = bridgeSnapshot.data() as BridgeRegistrationDoc;
     const expectedTokenHash = hashToken(presentedBridgeToken, TOKEN_HASH_PEPPER.value());
     if (bridge.bridgeTokenHash !== expectedTokenHash) {
+      logger.warn("sendNotification rejected: bridge token mismatch", {
+        bridgeId: body.bridgeId,
+        requestedDevices: body.deviceIds?.length ?? 0,
+      });
       res.status(401).json({error: "Invalid bridge credentials"});
       return;
     }
 
     if (bridge.expiresAt.toDate().getTime() < Date.now()) {
+      logger.warn("sendNotification rejected: bridge registration expired", {
+        bridgeId: body.bridgeId,
+        expiresAt: bridge.expiresAt.toDate().toISOString(),
+      });
       res.status(401).json({error: "Bridge registration has expired"});
       return;
     }
@@ -528,6 +572,13 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       sent,
       failed,
       errors,
+    });
+    logger.info("sendNotification result", {
+      bridgeId: body.bridgeId,
+      requested: targetDeviceIds.length,
+      sent,
+      failed,
+      errorCount: errors.length,
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
