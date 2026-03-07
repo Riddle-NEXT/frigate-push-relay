@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy Policy | Friggo</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 2rem 1rem 4rem;
+      line-height: 1.6;
+      color: #1f2937;
+    }
+    h1, h2 {
+      color: #111827;
+    }
+    h1 {
+      margin-bottom: 0.25rem;
+    }
+    .updated {
+      color: #6b7280;
+      font-size: 0.95rem;
+      margin-bottom: 2rem;
+    }
+    a {
+      color: #0f766e;
+    }
+    ul {
+      padding-left: 1.25rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>Friggo Privacy Policy</h1>
+  <p class="updated">Last updated: March 7, 2026</p>
+
+  <h2>Overview</h2>
+  <p>
+    Friggo is a companion app for self-hosted Frigate NVR and Home Assistant installations.
+    The app connects to infrastructure that you control and is designed to minimize data sharing.
+  </p>
+
+  <h2>Data We Handle</h2>
+  <p>
+    Friggo can process camera names, event labels, snapshots, notification payloads, and connection details
+    in order to show your cameras, events, and alerts.
+  </p>
+  <p>
+    This data is primarily stored on your own Frigate, Home Assistant, and Firebase project infrastructure.
+    We do not operate a separate commercial cloud service that stores your camera footage.
+  </p>
+
+  <h2>Notifications</h2>
+  <p>
+    Push notifications are delivered using your configured Firebase project and Apple/Google push services.
+    Notification contents may include event labels, camera names, thumbnails, or snapshots depending on your settings.
+  </p>
+
+  <h2>Authentication</h2>
+  <p>
+    Friggo can authenticate with Home Assistant using its native OAuth flow and can register devices for push notifications.
+    Authentication tokens are stored locally on your device using platform secure storage.
+  </p>
+
+  <h2>Third-Party Services</h2>
+  <ul>
+    <li><strong>Firebase Cloud Messaging</strong> for push delivery</li>
+    <li><strong>Apple Push Notification service</strong> for iOS notification delivery</li>
+    <li><strong>Google Play services</strong> for Android notification delivery where applicable</li>
+  </ul>
+
+  <h2>Open Source</h2>
+  <p>
+    Friggo and the associated Home Assistant integration are open source.
+    Source code is available at
+    <a href="https://github.com/Riddle-NEXT/FrigateMobile">github.com/Riddle-NEXT/FrigateMobile</a>
+    and
+    <a href="https://github.com/Riddle-NEXT/frigate-notify-bridge">github.com/Riddle-NEXT/frigate-notify-bridge</a>.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    For privacy questions, open an issue at
+    <a href="https://github.com/Riddle-NEXT/FrigateMobile/issues">github.com/Riddle-NEXT/FrigateMobile/issues</a>.
+  </p>
+</body>
+</html>
