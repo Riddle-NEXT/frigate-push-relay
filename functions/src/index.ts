@@ -13,7 +13,10 @@ import {
   getMinuteKey,
   hasForbiddenE2EFields,
   hashToken,
+  isFreshUnixTimestamp,
   readBearerToken,
+  signRequest,
+  timingSafeEqualHex,
   validateBridgeOrigin,
 } from "./auth";
 import {sendPushWithRetry} from "./fcm";
@@ -447,6 +450,11 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
     }
 
     const presentedBridgeToken = readBearerToken(req.get("authorization"));
+    const presentedTimestamp = String(req.get("X-Frigate-Timestamp") ?? "").trim();
+    const presentedSignature = String(req.get("X-Frigate-Signature") ?? "").trim().toLowerCase();
+    const rawBody = Buffer.isBuffer(req.rawBody) ?
+      req.rawBody.toString("utf8") :
+      JSON.stringify(req.body ?? {});
     const bridgeRef = getFirestore().collection("bridgeRegistrations").doc(body.bridgeId);
     const bridgeSnapshot = await bridgeRef.get();
 
@@ -467,6 +475,39 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
         requestedDevices: body.deviceIds?.length ?? 0,
       });
       res.status(401).json({error: "Invalid bridge credentials"});
+      return;
+    }
+
+    if (!isFreshUnixTimestamp(presentedTimestamp)) {
+      logger.warn("sendNotification rejected: stale or invalid timestamp", {
+        bridgeId: body.bridgeId,
+        timestamp: presentedTimestamp || "missing",
+      });
+      res.status(401).json({error: "Invalid or expired request signature"});
+      return;
+    }
+
+    if (!/^[a-f0-9]{64}$/.test(presentedSignature)) {
+      logger.warn("sendNotification rejected: missing or invalid signature", {
+        bridgeId: body.bridgeId,
+      });
+      res.status(401).json({error: "Invalid or expired request signature"});
+      return;
+    }
+
+    const expectedSignature = signRequest(
+      presentedBridgeToken,
+      req.method,
+      req.path,
+      presentedTimestamp,
+      rawBody
+    );
+    if (!timingSafeEqualHex(expectedSignature, presentedSignature)) {
+      logger.warn("sendNotification rejected: signature mismatch", {
+        bridgeId: body.bridgeId,
+        path: req.path,
+      });
+      res.status(401).json({error: "Invalid or expired request signature"});
       return;
     }
 
@@ -600,7 +641,7 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       return;
     }
 
-    if (message.includes("Bearer") || message.includes("credentials") || message.includes("expired")) {
+    if (message.includes("Bearer") || message.includes("credentials") || message.includes("expired") || message.includes("signature")) {
       res.status(401).json({error: message});
       return;
     }

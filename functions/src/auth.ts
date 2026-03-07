@@ -8,6 +8,64 @@ export function hashToken(token: string, pepper: string): string {
     .digest("hex");
 }
 
+export function sha256Hex(payload: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(payload, "utf8")
+    .digest("hex");
+}
+
+export function buildSignedRequestMessage(
+  method: string,
+  path: string,
+  unixTimestamp: string,
+  body: string
+): string {
+  return [
+    method.toUpperCase(),
+    path,
+    unixTimestamp,
+    sha256Hex(body),
+  ].join("\n");
+}
+
+export function signRequest(
+  secret: string,
+  method: string,
+  path: string,
+  unixTimestamp: string,
+  body: string
+): string {
+  return crypto
+    .createHmac("sha256", secret)
+    .update(buildSignedRequestMessage(method, path, unixTimestamp, body), "utf8")
+    .digest("hex");
+}
+
+export function timingSafeEqualHex(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "hex");
+  const rightBuffer = Buffer.from(right, "hex");
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+export function isFreshUnixTimestamp(
+  unixTimestamp: string,
+  toleranceSeconds = 300
+): boolean {
+  if (!/^\d{10}$/.test(unixTimestamp)) {
+    return false;
+  }
+  const parsed = Number(unixTimestamp);
+  if (!Number.isFinite(parsed)) {
+    return false;
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  return Math.abs(nowSeconds - parsed) <= toleranceSeconds;
+}
+
 export function readBearerToken(authorizationHeader: string | undefined): string {
   if (!authorizationHeader || !authorizationHeader.startsWith("Bearer ")) {
     throw new Error("Missing Bearer token");
