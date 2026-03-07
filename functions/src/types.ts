@@ -56,6 +56,10 @@ export interface SendNotificationRequest {
   encryptedPayload: string;
   title?: string;
   body?: string;
+  imageUrl?: string;
+  category?: string;
+  threadId?: string;
+  notificationData?: Record<string, string>;
   deviceId?: string;
   deviceIds?: string[];
 }

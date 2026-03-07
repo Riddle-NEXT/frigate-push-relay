@@ -4,6 +4,7 @@ interface SendResult {
   messageId: string | null;
   invalidToken: boolean;
   errorCode: string | null;
+  errorMessage: string | null;
 }
 
 function delayMs(ms: number): Promise<void> {
@@ -34,15 +35,18 @@ export async function sendPushWithRetry(message: Message): Promise<SendResult> {
         messageId,
         invalidToken: false,
         errorCode: null,
+        errorMessage: null,
       };
     } catch (error: unknown) {
-      const code = (error as { code?: string }).code;
+      const code = (error as {code?: string}).code;
+      const errorMessage = error instanceof Error ? error.message : String(error);
       if (isPermanentFCMError(code)) {
         return {
           messageId: null,
           invalidToken: code === "messaging/registration-token-not-registered" ||
             code === "messaging/invalid-registration-token",
           errorCode: code ?? null,
+          errorMessage,
         };
       }
 
@@ -51,6 +55,7 @@ export async function sendPushWithRetry(message: Message): Promise<SendResult> {
           messageId: null,
           invalidToken: false,
           errorCode: code ?? "unknown",
+          errorMessage,
         };
       }
 
@@ -63,5 +68,6 @@ export async function sendPushWithRetry(message: Message): Promise<SendResult> {
     messageId: null,
     invalidToken: false,
     errorCode: "unknown",
+    errorMessage: "Unknown FCM error",
   };
 }

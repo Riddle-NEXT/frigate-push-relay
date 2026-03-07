@@ -118,8 +118,12 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
   const encryptedPayload = String(payload.encryptedPayload ?? "");
   const title = payload.title ? String(payload.title) : undefined;
   const msgBody = payload.body ? String(payload.body) : undefined;
+  const imageUrl = payload.imageUrl ? String(payload.imageUrl).trim() : undefined;
+  const category = payload.category ? String(payload.category).trim() : undefined;
+  const threadId = payload.threadId ? String(payload.threadId).trim() : undefined;
   const singleDeviceId = payload.deviceId ? String(payload.deviceId).trim() : undefined;
   const listDeviceIds = Array.isArray(payload.deviceIds) ? payload.deviceIds : [];
+  const rawNotificationData = payload.notificationData;
 
   if (!/^[A-Za-z0-9._:-]{3,128}$/.test(bridgeId)) {
     throw new Error("bridgeId is invalid");
@@ -137,6 +141,43 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
   }
   if (msgBody && msgBody.length > 500) {
     throw new Error("body is too long");
+  }
+  if (imageUrl && imageUrl.length > 2048) {
+    throw new Error("imageUrl is too long");
+  }
+  if (category && !/^[A-Za-z0-9_.-]{1,64}$/.test(category)) {
+    throw new Error("category is invalid");
+  }
+  if (threadId && threadId.length > 64) {
+    throw new Error("threadId is too long");
+  }
+
+  let notificationData: Record<string, string> | undefined;
+  if (rawNotificationData !== undefined) {
+    if (!rawNotificationData || typeof rawNotificationData !== "object" || Array.isArray(rawNotificationData)) {
+      throw new Error("notificationData must be an object");
+    }
+
+    notificationData = {};
+    for (const [key, value] of Object.entries(rawNotificationData as Record<string, unknown>)) {
+      const normalizedKey = String(key).trim();
+      if (!/^[A-Za-z0-9_.-]{1,64}$/.test(normalizedKey)) {
+        throw new Error("notificationData contains an invalid key");
+      }
+      if (
+        normalizedKey === "from" ||
+        normalizedKey.startsWith("google.") ||
+        normalizedKey.startsWith("gcm.")
+      ) {
+        throw new Error("notificationData contains a reserved key");
+      }
+
+      const normalizedValue = String(value ?? "");
+      if (normalizedValue.length > 1024) {
+        throw new Error("notificationData contains a value that is too long");
+      }
+      notificationData[normalizedKey] = normalizedValue;
+    }
   }
 
   const deviceIds = new Set<string>();
@@ -167,6 +208,10 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
     encryptedPayload,
     title,
     body: msgBody,
+    imageUrl,
+    category,
+    threadId,
+    notificationData,
     deviceIds: [...deviceIds],
   };
 }
@@ -532,6 +577,15 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
     let sent = 0;
     let failed = 0;
     const errors: string[] = [];
+    const deliveryFailures: Array<{
+      deviceId: string;
+      platform: string;
+      appVersion: string | null;
+      appId: string;
+      invalidToken: boolean;
+      errorCode: string;
+      errorMessage: string | null;
+    }> = [];
     const writeBatch = getFirestore().batch();
 
     const notificationTitle = body.title ?? "Frigate Alert";
@@ -556,23 +610,36 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
         notification: {
           title: notificationTitle,
           body: notificationBody,
+          imageUrl: body.imageUrl,
         },
         data: {
           encrypted: body.encryptedPayload,
           bridgeId: body.bridgeId,
           deviceId: snapshot.id,
+          click_action: "FLUTTER_NOTIFICATION_CLICK",
+          ...body.notificationData,
         },
         android: {
           priority: "high",
+          notification: {
+            channelId: "frigate_alerts",
+            imageUrl: body.imageUrl,
+            tag: body.threadId,
+            clickAction: "FLUTTER_NOTIFICATION_CLICK",
+          },
         },
         apns: {
           headers: {
             "apns-priority": "10",
             "apns-push-type": "alert",
           },
+          fcmOptions: body.imageUrl ? {imageUrl: body.imageUrl} : undefined,
           payload: {
             aps: {
               sound: "default",
+              category: body.category,
+              threadId: body.threadId,
+              mutableContent: Boolean(body.imageUrl),
             },
           },
         },
@@ -581,7 +648,17 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       const sendResult = await sendPushWithRetry(message);
       if (!sendResult.messageId) {
         failed++;
-        errors.push(`${snapshot.id}: ${sendResult.errorCode ?? "fcm send failed"}`);
+        const errorCode = sendResult.errorCode ?? "fcm send failed";
+        errors.push(`${snapshot.id}: ${errorCode}`);
+        deliveryFailures.push({
+          deviceId: snapshot.id,
+          platform: device.platform,
+          appVersion: device.appVersion,
+          appId: device.appId,
+          invalidToken: sendResult.invalidToken,
+          errorCode,
+          errorMessage: sendResult.errorMessage,
+        });
         if (sendResult.invalidToken) {
           writeBatch.delete(snapshot.ref);
         }
@@ -620,7 +697,15 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       sent,
       failed,
       errorCount: errors.length,
+      deliveryFailures,
     });
+    if (deliveryFailures.length > 0) {
+      logger.warn("sendNotification delivery failures", {
+        bridgeId: body.bridgeId,
+        failureCount: deliveryFailures.length,
+        deliveryFailures,
+      });
+    }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     logger.error("sendNotification failed", {
