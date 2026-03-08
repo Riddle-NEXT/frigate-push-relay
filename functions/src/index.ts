@@ -236,13 +236,20 @@ function buildRelayMessageData(
   body: SendNotificationRequest,
   deviceId: string
 ): Record<string, string> {
-  return {
+  const data: Record<string, string> = {
     encrypted: body.encryptedPayload,
     bridgeId: body.bridgeId,
     deviceId,
     click_action: RELAY_CLICK_ACTION,
     ...(body.notificationData ?? {}),
   };
+
+  // Add imageUrl to data payload so app can download/cache it for notifications
+  if (body.imageUrl) {
+    data.imageUrl = body.imageUrl;
+  }
+
+  return data;
 }
 
 function assertFcmPayloadFits(body: SendNotificationRequest): void {
