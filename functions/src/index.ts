@@ -241,13 +241,11 @@ function buildRelayMessageData(
     bridgeId: body.bridgeId,
     deviceId,
     click_action: RELAY_CLICK_ACTION,
-    ...(body.notificationData ?? {}),
+    ...(body.notificationData ?? {}),  // Will be empty now - full E2E encryption
   };
 
-  // Add imageUrl to data payload so app can download/cache it for notifications
-  if (body.imageUrl) {
-    data.imageUrl = body.imageUrl;
-  }
+  // DON'T add imageUrl to plaintext - it's in encrypted payload
+  // Full E2E encryption - no sensitive data in plaintext (imageUrl may contain camera names)
 
   return data;
 }
