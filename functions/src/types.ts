@@ -16,6 +16,8 @@ export interface DeviceRegistrationDoc {
   fcmToken: string;
   platform: string;
   appVersion: string | null;
+  subscriptionActive: boolean | null;
+  subscriptionUpdatedAt: FirebaseFirestore.Timestamp | null;
   createdAt: FirebaseFirestore.Timestamp;
   updatedAt: FirebaseFirestore.Timestamp;
   lastNotifiedAt: FirebaseFirestore.Timestamp | null;
@@ -49,6 +51,7 @@ export interface RegisterTokenRequest {
   fcmToken: string;
   platform: "ios" | "android" | "unknown";
   appVersion?: string;
+  subscriptionActive?: boolean;
 }
 
 export interface SendNotificationRequest {

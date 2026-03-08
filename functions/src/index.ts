@@ -79,6 +79,7 @@ function parseRegisterTokenBody(body: unknown): RegisterTokenRequest {
   const fcmToken = String(payload.fcmToken ?? "").trim();
   const platform = String(payload.platform ?? "unknown").trim().toLowerCase();
   const appVersion = payload.appVersion ? String(payload.appVersion).trim() : undefined;
+  const subscriptionActive = payload.subscriptionActive;
 
   if (!/^[A-Za-z0-9._:-]{3,128}$/.test(bridgeId)) {
     throw new Error("bridgeId is invalid");
@@ -98,6 +99,12 @@ function parseRegisterTokenBody(body: unknown): RegisterTokenRequest {
   if (appVersion && appVersion.length > 64) {
     throw new Error("appVersion is too long");
   }
+  if (
+    subscriptionActive !== undefined &&
+    typeof subscriptionActive !== "boolean"
+  ) {
+    throw new Error("subscriptionActive must be a boolean");
+  }
 
   return {
     bridgeId,
@@ -106,6 +113,7 @@ function parseRegisterTokenBody(body: unknown): RegisterTokenRequest {
     fcmToken,
     platform: platform as "ios" | "android" | "unknown",
     appVersion,
+    subscriptionActive: subscriptionActive as boolean | undefined,
   };
 }
 
@@ -383,6 +391,7 @@ export const registerToken = onRequest(OPTIONS, async (req, res) => {
       bridgeId: body.bridgeId,
       deviceId: body.deviceId,
       platform: body.platform,
+      subscriptionActive: body.subscriptionActive ?? null,
       uid: identity.uid,
       appId: identity.appId,
       hasAuthHeader: Boolean(req.get("authorization")),
@@ -399,9 +408,15 @@ export const registerToken = onRequest(OPTIONS, async (req, res) => {
     const deviceRef = bridgeRef.collection("devices").doc(body.deviceId);
 
     await db.runTransaction(async (transaction) => {
-      const bridgeSnapshot = await transaction.get(bridgeRef);
+      const [bridgeSnapshot, deviceSnapshot] = await Promise.all([
+        transaction.get(bridgeRef),
+        transaction.get(deviceRef),
+      ]);
       const existingBridge = bridgeSnapshot.exists ?
         bridgeSnapshot.data() as BridgeRegistrationDoc :
+        undefined;
+      const existingDevice = deviceSnapshot.exists ?
+        deviceSnapshot.data() as DeviceRegistrationDoc :
         undefined;
 
       if (
@@ -440,9 +455,13 @@ export const registerToken = onRequest(OPTIONS, async (req, res) => {
           fcmToken: body.fcmToken,
           platform: body.platform,
           appVersion: body.appVersion ?? null,
-          createdAt: FieldValue.serverTimestamp(),
+          subscriptionActive: body.subscriptionActive ?? existingDevice?.subscriptionActive ?? null,
+          subscriptionUpdatedAt: body.subscriptionActive === undefined ?
+            existingDevice?.subscriptionUpdatedAt ?? null :
+            FieldValue.serverTimestamp(),
+          createdAt: existingDevice?.createdAt ?? FieldValue.serverTimestamp(),
           updatedAt: FieldValue.serverTimestamp(),
-          lastNotifiedAt: null,
+          lastNotifiedAt: existingDevice?.lastNotifiedAt ?? null,
           expiresAt,
         },
         {merge: true}
@@ -458,6 +477,7 @@ export const registerToken = onRequest(OPTIONS, async (req, res) => {
     logger.info("registerToken success", {
       bridgeId: body.bridgeId,
       deviceId: body.deviceId,
+      subscriptionActive: body.subscriptionActive ?? null,
       uid: identity.uid,
       appId: identity.appId,
       expiresAt: expiresAt.toDate().toISOString(),
@@ -529,9 +549,12 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
 
   try {
     const body = parseSendNotificationBody(req.body);
+    const encryptedPayloadBytes = Buffer.byteLength(body.encryptedPayload, "utf8");
     logger.info("sendNotification request accepted", {
       bridgeId: body.bridgeId,
       requestedDevices: body.deviceIds?.length ?? 0,
+      encryptedPayloadBytes,
+      hasImageUrl: Boolean(body.imageUrl),
       hasAuthHeader: Boolean(req.get("authorization")),
       origin: req.get("origin") ?? "none",
       ip: req.ip,
@@ -653,6 +676,20 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
         errors.push(`${snapshot.id}: token expired`);
         continue;
       }
+      if (device.subscriptionActive === false) {
+        failed++;
+        errors.push(`${snapshot.id}: subscription inactive`);
+        deliveryFailures.push({
+          deviceId: snapshot.id,
+          platform: device.platform,
+          appVersion: device.appVersion,
+          appId: device.appId,
+          invalidToken: false,
+          errorCode: "subscription-inactive",
+          errorMessage: "Device push subscription is inactive",
+        });
+        continue;
+      }
 
       const message: Message = {
         token: device.fcmToken,
@@ -768,7 +805,17 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
     }
 
     if (isBadRequestMessage(message)) {
-      res.status(400).json({error: message});
+      // Extract payload size info if available for debugging
+      const sizeMatch = message.match(/\((\d+)\s*bytes\)/);
+      const payloadSize = sizeMatch ? parseInt(sizeMatch[1], 10) : undefined;
+      res.status(400).json({
+        error: message,
+        payloadSize,
+        limit: FCM_DATA_LIMIT_BYTES,
+        hint: payloadSize && payloadSize > FCM_DATA_LIMIT_BYTES
+          ? "Reduce encryptedPayload size, remove image URLs, or trim notificationData fields"
+          : undefined,
+      });
       return;
     }
 

@@ -22,7 +22,23 @@ function isPermanentFCMError(code: string | undefined): boolean {
     "messaging/invalid-registration-token",
     "messaging/registration-token-not-registered",
     "messaging/invalid-argument",
+    "messaging/message-rate-exceeded",
   ].includes(code);
+}
+
+/**
+ * Check if an error indicates the message payload was too large.
+ * FCM has a 4KB limit for data payloads.
+ */
+function isPayloadTooLargeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const messageLower = message.toLowerCase();
+  return (
+    messageLower.includes("message is too big") ||
+    messageLower.includes("payload exceeds") ||
+    messageLower.includes("too large") ||
+    messageLower.includes("exceeds the limit")
+  );
 }
 
 export async function sendPushWithRetry(message: Message): Promise<SendResult> {
@@ -40,6 +56,17 @@ export async function sendPushWithRetry(message: Message): Promise<SendResult> {
     } catch (error: unknown) {
       const code = (error as {code?: string}).code;
       const errorMessage = error instanceof Error ? error.message : String(error);
+
+      // Check for payload-too-large errors - these are permanent and shouldn't retry
+      if (isPayloadTooLargeError(error)) {
+        return {
+          messageId: null,
+          invalidToken: false,
+          errorCode: "messaging/payload-too-large",
+          errorMessage,
+        };
+      }
+
       if (isPermanentFCMError(code)) {
         return {
           messageId: null,
