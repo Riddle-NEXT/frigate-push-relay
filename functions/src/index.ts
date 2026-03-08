@@ -51,6 +51,11 @@ const OPTIONS = {
   secrets: [TOKEN_HASH_PEPPER],
 };
 
+const FCM_DATA_LIMIT_BYTES = 4096;
+const RELAY_CLICK_ACTION = "FLUTTER_NOTIFICATION_CLICK";
+const RESERVED_NOTIFICATION_DATA_KEYS = new Set(["from"]);
+const RESERVED_NOTIFICATION_DATA_PREFIXES = ["google.", "gcm."];
+
 /**
  * health returns a simple 200 OK for relay reachability checks.
  */
@@ -133,7 +138,7 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
   }
 
   const payloadBytes = Buffer.byteLength(encryptedPayload, "utf8");
-  if (payloadBytes > 4096) {
+  if (payloadBytes > FCM_DATA_LIMIT_BYTES) {
     throw new Error("encryptedPayload exceeds 4KB limit");
   }
   if (title && title.length > 120) {
@@ -165,9 +170,8 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
         throw new Error("notificationData contains an invalid key");
       }
       if (
-        normalizedKey === "from" ||
-        normalizedKey.startsWith("google.") ||
-        normalizedKey.startsWith("gcm.")
+        RESERVED_NOTIFICATION_DATA_KEYS.has(normalizedKey) ||
+        RESERVED_NOTIFICATION_DATA_PREFIXES.some((prefix) => normalizedKey.startsWith(prefix))
       ) {
         throw new Error("notificationData contains a reserved key");
       }
@@ -214,6 +218,50 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
     notificationData,
     deviceIds: [...deviceIds],
   };
+}
+
+function estimateFcmDataBytes(data: Record<string, string>): number {
+  return Buffer.byteLength(JSON.stringify(data), "utf8");
+}
+
+function buildRelayMessageData(
+  body: SendNotificationRequest,
+  deviceId: string
+): Record<string, string> {
+  return {
+    encrypted: body.encryptedPayload,
+    bridgeId: body.bridgeId,
+    deviceId,
+    click_action: RELAY_CLICK_ACTION,
+    ...(body.notificationData ?? {}),
+  };
+}
+
+function assertFcmPayloadFits(body: SendNotificationRequest): void {
+  const deviceIds = body.deviceIds ?? [];
+  const maxDataBytes = deviceIds.reduce((maxBytes, deviceId) => {
+    const currentBytes = estimateFcmDataBytes(buildRelayMessageData(body, deviceId));
+    return Math.max(maxBytes, currentBytes);
+  }, 0);
+
+  if (maxDataBytes > FCM_DATA_LIMIT_BYTES) {
+    throw new Error(`FCM data payload exceeds 4KB limit (${maxDataBytes} bytes)`);
+  }
+}
+
+function isBadRequestMessage(message: string): boolean {
+  return [
+    "invalid",
+    "required",
+    "4KB",
+    "too long",
+    "must be",
+    "reserved",
+    "At least one target deviceId",
+    "Request body must be a JSON object",
+    "Relay does not process E2E keys",
+    "FCM data payload exceeds",
+  ].some((needle) => message.includes(needle));
 }
 
 async function verifyAppIdentity(req: Request): Promise<{uid: string; appId: string}> {
@@ -567,6 +615,7 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
 
     const targetDeviceIds = body.deviceIds ?? [];
     await enforceBridgeRateLimit(body.bridgeId, targetDeviceIds.length, startedAt);
+    assertFcmPayloadFits(body);
 
     const payloadBytes = Buffer.byteLength(body.encryptedPayload, "utf8");
     const devicesCollection = bridgeRef.collection("devices");
@@ -613,11 +662,7 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
           imageUrl: body.imageUrl,
         },
         data: {
-          encrypted: body.encryptedPayload,
-          bridgeId: body.bridgeId,
-          deviceId: snapshot.id,
-          click_action: "FLUTTER_NOTIFICATION_CLICK",
-          ...body.notificationData,
+          ...buildRelayMessageData(body, snapshot.id),
         },
         android: {
           priority: "high",
@@ -625,7 +670,7 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
             channelId: "frigate_alerts",
             imageUrl: body.imageUrl,
             tag: body.threadId,
-            clickAction: "FLUTTER_NOTIFICATION_CLICK",
+            clickAction: RELAY_CLICK_ACTION,
           },
         },
         apns: {
@@ -690,6 +735,7 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       sent,
       failed,
       errors,
+      deliveryFailures,
     });
     logger.info("sendNotification result", {
       bridgeId: body.bridgeId,
@@ -721,7 +767,7 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       return;
     }
 
-    if (message.includes("invalid") || message.includes("required") || message.includes("4KB")) {
+    if (isBadRequestMessage(message)) {
       res.status(400).json({error: message});
       return;
     }
