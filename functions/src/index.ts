@@ -244,9 +244,6 @@ function buildRelayMessageData(
     ...(body.notificationData ?? {}),  // Will be empty now - full E2E encryption
   };
 
-  // DON'T add imageUrl to plaintext - it's in encrypted payload
-  // Full E2E encryption - no sensitive data in plaintext (imageUrl may contain camera names)
-
   return data;
 }
 
@@ -720,13 +717,12 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
             "apns-priority": "10",
             "apns-push-type": "alert",
           },
-          fcmOptions: body.imageUrl ? {imageUrl: body.imageUrl} : undefined,
           payload: {
             aps: {
               sound: "default",
               category: body.category,
               threadId: body.threadId,
-              mutableContent: Boolean(body.imageUrl),
+              mutableContent: true,
             },
           },
         },
@@ -785,6 +781,15 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       sent,
       failed,
       errorCount: errors.length,
+      errors,
+      failureSummaries: deliveryFailures.map((failure) => ({
+        deviceId: failure.deviceId,
+        platform: failure.platform,
+        appVersion: failure.appVersion,
+        errorCode: failure.errorCode,
+        invalidToken: failure.invalidToken,
+        errorMessage: failure.errorMessage,
+      })),
       deliveryFailures,
     });
     if (deliveryFailures.length > 0) {
