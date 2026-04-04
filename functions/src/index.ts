@@ -693,24 +693,50 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
         continue;
       }
 
+      const notification: {title: string; body: string; imageUrl?: string} = {
+        title: notificationTitle,
+        body: notificationBody,
+      };
+      if (body.imageUrl) {
+        notification.imageUrl = body.imageUrl;
+      }
+
+      const androidNotification: {
+        channelId: string;
+        imageUrl?: string;
+        tag?: string;
+        clickAction: string;
+      } = {
+        channelId: "frigate_alerts",
+        clickAction: RELAY_CLICK_ACTION,
+      };
+      if (body.imageUrl) {
+        androidNotification.imageUrl = body.imageUrl;
+      }
+      if (body.threadId) {
+        androidNotification.tag = body.threadId;
+      }
+
+      const aps: Record<string, unknown> = {
+        sound: "default",
+        mutableContent: true,
+      };
+      if (body.category) {
+        aps.category = body.category;
+      }
+      if (body.threadId) {
+        aps.threadId = body.threadId;
+      }
+
       const message: Message = {
         token: device.fcmToken,
-        notification: {
-          title: notificationTitle,
-          body: notificationBody,
-          imageUrl: body.imageUrl,
-        },
+        notification,
         data: {
           ...buildRelayMessageData(body, snapshot.id),
         },
         android: {
           priority: "high",
-          notification: {
-            channelId: "frigate_alerts",
-            imageUrl: body.imageUrl,
-            tag: body.threadId,
-            clickAction: RELAY_CLICK_ACTION,
-          },
+          notification: androidNotification,
         },
         apns: {
           headers: {
@@ -718,12 +744,7 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
             "apns-push-type": "alert",
           },
           payload: {
-            aps: {
-              sound: "default",
-              category: body.category,
-              threadId: body.threadId,
-              mutableContent: true,
-            },
+            aps,
           },
         },
       };
