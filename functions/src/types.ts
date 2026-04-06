@@ -62,6 +62,7 @@ export interface SendNotificationRequest {
   imageUrl?: string;
   category?: string;
   threadId?: string;
+  collapseId?: string;
   notificationData?: Record<string, string>;
   deviceId?: string;
   deviceIds?: string[];

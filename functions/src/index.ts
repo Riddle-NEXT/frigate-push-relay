@@ -134,6 +134,7 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
   const imageUrl = payload.imageUrl ? String(payload.imageUrl).trim() : undefined;
   const category = payload.category ? String(payload.category).trim() : undefined;
   const threadId = payload.threadId ? String(payload.threadId).trim() : undefined;
+  const collapseId = payload.collapseId ? String(payload.collapseId).trim() : undefined;
   const singleDeviceId = payload.deviceId ? String(payload.deviceId).trim() : undefined;
   const listDeviceIds = Array.isArray(payload.deviceIds) ? payload.deviceIds : [];
   const rawNotificationData = payload.notificationData;
@@ -163,6 +164,9 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
   }
   if (threadId && threadId.length > 64) {
     throw new Error("threadId is too long");
+  }
+  if (collapseId && collapseId.length > 64) {
+    throw new Error("collapseId is too long");
   }
 
   let notificationData: Record<string, string> | undefined;
@@ -223,6 +227,7 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
     imageUrl,
     category,
     threadId,
+    collapseId,
     notificationData,
     deviceIds: [...deviceIds],
   };
@@ -241,6 +246,7 @@ function buildRelayMessageData(
     bridgeId: body.bridgeId,
     deviceId,
     click_action: RELAY_CLICK_ACTION,
+    ...(body.collapseId ? {collapseId: body.collapseId} : {}),
     ...(body.notificationData ?? {}),  // Will be empty now - full E2E encryption
   };
 
@@ -713,7 +719,9 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       if (body.imageUrl) {
         androidNotification.imageUrl = body.imageUrl;
       }
-      if (body.threadId) {
+      if (body.collapseId) {
+        androidNotification.tag = body.collapseId;
+      } else if (body.threadId) {
         androidNotification.tag = body.threadId;
       }
 
@@ -728,6 +736,14 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
         aps.threadId = body.threadId;
       }
 
+      const apnsHeaders: Record<string, string> = {
+        "apns-priority": "10",
+        "apns-push-type": "alert",
+      };
+      if (body.collapseId) {
+        apnsHeaders["apns-collapse-id"] = body.collapseId;
+      }
+
       const message: Message = {
         token: device.fcmToken,
         notification,
@@ -736,13 +752,11 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
         },
         android: {
           priority: "high",
+          collapseKey: body.collapseId,
           notification: androidNotification,
         },
         apns: {
-          headers: {
-            "apns-priority": "10",
-            "apns-push-type": "alert",
-          },
+          headers: apnsHeaders,
           payload: {
             aps,
           },
