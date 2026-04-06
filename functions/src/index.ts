@@ -32,9 +32,7 @@ initializeApp();
 
 const TOKEN_HASH_PEPPER = defineSecret("TOKEN_HASH_PEPPER");
 const GOOGLE_CLIENT_SECRET_PARAM = defineSecret("GOOGLE_CLIENT_SECRET");
-const GOOGLE_CLIENT_ID_PARAM = defineString("GOOGLE_CLIENT_ID", {
-  default: "REDACTED_GOOGLE_CLIENT_ID",
-});
+const GOOGLE_CLIENT_ID_PARAM = defineString("GOOGLE_CLIENT_ID");
 const RATE_LIMIT_PER_MINUTE = defineInt("RATE_LIMIT_PER_MINUTE", {default: 100});
 const TOKEN_TTL_DAYS = defineInt("TOKEN_TTL_DAYS", {default: 30});
 const USAGE_TTL_DAYS = defineInt("USAGE_TTL_DAYS", {default: 120});
