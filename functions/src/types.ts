@@ -16,6 +16,8 @@ export interface DeviceRegistrationDoc {
   fcmToken: string;
   platform: string;
   appVersion: string | null;
+  liveActivityPushToStartToken: string | null;
+  liveActivityPushToken: string | null;
   subscriptionActive: boolean | null;
   subscriptionUpdatedAt: FirebaseFirestore.Timestamp | null;
   createdAt: FirebaseFirestore.Timestamp;
@@ -51,7 +53,25 @@ export interface RegisterTokenRequest {
   fcmToken: string;
   platform: "ios" | "android" | "unknown";
   appVersion?: string;
+  liveActivityPushToStartToken?: string;
+  liveActivityPushToken?: string;
   subscriptionActive?: boolean;
+}
+
+export interface LiveActivityRequest {
+  event: "start" | "update" | "end";
+  tokenType?: "push_to_start" | "update";
+  attributesType: string;
+  attributes?: Record<string, unknown>;
+  contentState: Record<string, unknown>;
+  timestamp?: number;
+  staleDate?: number;
+  dismissalDate?: number;
+  alert?: {
+    title?: string;
+    body?: string;
+  };
+  suppressStandardPush?: boolean;
 }
 
 export interface SendNotificationRequest {
@@ -64,6 +84,7 @@ export interface SendNotificationRequest {
   threadId?: string;
   collapseId?: string;
   notificationData?: Record<string, string>;
+  liveActivity?: LiveActivityRequest;
   deviceId?: string;
   deviceIds?: string[];
 }

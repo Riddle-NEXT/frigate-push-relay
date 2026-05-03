@@ -23,6 +23,7 @@ import {sendPushWithRetry} from "./fcm";
 import {
   BridgeRegistrationDoc,
   DeviceRegistrationDoc,
+  LiveActivityRequest,
   RegisterTokenRequest,
   SendNotificationRequest,
 } from "./types";
@@ -53,6 +54,7 @@ const FCM_DATA_LIMIT_BYTES = 4096;
 const RELAY_CLICK_ACTION = "FLUTTER_NOTIFICATION_CLICK";
 const RESERVED_NOTIFICATION_DATA_KEYS = new Set(["from"]);
 const RESERVED_NOTIFICATION_DATA_PREFIXES = ["google.", "gcm."];
+const LIVE_ACTIVITY_DATA_LIMIT_BYTES = 2048;
 
 /**
  * health returns a simple 200 OK for relay reachability checks.
@@ -77,6 +79,12 @@ function parseRegisterTokenBody(body: unknown): RegisterTokenRequest {
   const fcmToken = String(payload.fcmToken ?? "").trim();
   const platform = String(payload.platform ?? "unknown").trim().toLowerCase();
   const appVersion = payload.appVersion ? String(payload.appVersion).trim() : undefined;
+  const liveActivityPushToStartToken = payload.liveActivityPushToStartToken ?
+    String(payload.liveActivityPushToStartToken).trim() :
+    undefined;
+  const liveActivityPushToken = payload.liveActivityPushToken ?
+    String(payload.liveActivityPushToken).trim() :
+    undefined;
   const subscriptionActive = payload.subscriptionActive;
 
   if (!/^[A-Za-z0-9._:-]{3,128}$/.test(bridgeId)) {
@@ -97,6 +105,12 @@ function parseRegisterTokenBody(body: unknown): RegisterTokenRequest {
   if (appVersion && appVersion.length > 64) {
     throw new Error("appVersion is too long");
   }
+  if (liveActivityPushToStartToken && !/^[A-Fa-f0-9]{32,512}$/.test(liveActivityPushToStartToken)) {
+    throw new Error("liveActivityPushToStartToken is invalid");
+  }
+  if (liveActivityPushToken && !/^[A-Fa-f0-9]{32,512}$/.test(liveActivityPushToken)) {
+    throw new Error("liveActivityPushToken is invalid");
+  }
   if (
     subscriptionActive !== undefined &&
     typeof subscriptionActive !== "boolean"
@@ -111,7 +125,87 @@ function parseRegisterTokenBody(body: unknown): RegisterTokenRequest {
     fcmToken,
     platform: platform as "ios" | "android" | "unknown",
     appVersion,
+    liveActivityPushToStartToken,
+    liveActivityPushToken,
     subscriptionActive: subscriptionActive as boolean | undefined,
+  };
+}
+
+function parseLiveActivity(raw: unknown): LiveActivityRequest | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("liveActivity must be an object");
+  }
+
+  const payload = raw as Record<string, unknown>;
+  const event = String(payload.event ?? "").trim().toLowerCase();
+  const tokenType = payload.tokenType ? String(payload.tokenType).trim().toLowerCase() : undefined;
+  const attributesType = String(payload.attributesType ?? "").trim();
+  const attributes = payload.attributes;
+  const contentState = payload.contentState;
+  const alert = payload.alert;
+  const suppressStandardPush = payload.suppressStandardPush === true;
+
+  if (!["start", "update", "end"].includes(event)) {
+    throw new Error("liveActivity event is invalid");
+  }
+  if (tokenType && !["push_to_start", "update"].includes(tokenType)) {
+    throw new Error("liveActivity tokenType is invalid");
+  }
+  if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(attributesType)) {
+    throw new Error("liveActivity attributesType is invalid");
+  }
+  if (!contentState || typeof contentState !== "object" || Array.isArray(contentState)) {
+    throw new Error("liveActivity contentState must be an object");
+  }
+  if (attributes !== undefined && (!attributes || typeof attributes !== "object" || Array.isArray(attributes))) {
+    throw new Error("liveActivity attributes must be an object");
+  }
+  if (event === "start" && attributes === undefined) {
+    throw new Error("liveActivity start requires attributes");
+  }
+  if (alert !== undefined && (!alert || typeof alert !== "object" || Array.isArray(alert))) {
+    throw new Error("liveActivity alert must be an object");
+  }
+
+  const contentStateBytes = Buffer.byteLength(JSON.stringify(contentState), "utf8");
+  const attributesBytes = Buffer.byteLength(JSON.stringify(attributes ?? {}), "utf8");
+  if (contentStateBytes > LIVE_ACTIVITY_DATA_LIMIT_BYTES || attributesBytes > LIVE_ACTIVITY_DATA_LIMIT_BYTES) {
+    throw new Error("liveActivity payload is too large");
+  }
+
+  const parsedAlert = alert as Record<string, unknown> | undefined;
+  const title = parsedAlert?.title ? String(parsedAlert.title).trim() : undefined;
+  const body = parsedAlert?.body ? String(parsedAlert.body).trim() : undefined;
+  if (title && title.length > 120) {
+    throw new Error("liveActivity alert title is too long");
+  }
+  if (body && body.length > 500) {
+    throw new Error("liveActivity alert body is too long");
+  }
+
+  function optionalUnixSeconds(value: unknown, fieldName: string): number | undefined {
+    if (value === undefined || value === null || value === "") return undefined;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new Error(`liveActivity ${fieldName} is invalid`);
+    }
+    return Math.floor(parsed);
+  }
+
+  return {
+    event: event as "start" | "update" | "end",
+    tokenType: tokenType as "push_to_start" | "update" | undefined,
+    attributesType,
+    attributes: attributes ? attributes as Record<string, unknown> : undefined,
+    contentState: contentState as Record<string, unknown>,
+    timestamp: optionalUnixSeconds(payload.timestamp, "timestamp"),
+    staleDate: optionalUnixSeconds(payload.staleDate, "staleDate"),
+    dismissalDate: optionalUnixSeconds(payload.dismissalDate, "dismissalDate"),
+    alert: title || body ? {title, body} : undefined,
+    suppressStandardPush,
   };
 }
 
@@ -132,10 +226,15 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
   const imageUrl = payload.imageUrl ? String(payload.imageUrl).trim() : undefined;
   const category = payload.category ? String(payload.category).trim() : undefined;
   const threadId = payload.threadId ? String(payload.threadId).trim() : undefined;
-  const collapseId = payload.collapseId ? String(payload.collapseId).trim() : undefined;
+  const collapseId = payload.collapseId ?
+    String(payload.collapseId).trim() :
+    payload.collapseKey ?
+      String(payload.collapseKey).trim() :
+      undefined;
   const singleDeviceId = payload.deviceId ? String(payload.deviceId).trim() : undefined;
   const listDeviceIds = Array.isArray(payload.deviceIds) ? payload.deviceIds : [];
   const rawNotificationData = payload.notificationData;
+  const liveActivity = parseLiveActivity(payload.liveActivity);
 
   if (!/^[A-Za-z0-9._:-]{3,128}$/.test(bridgeId)) {
     throw new Error("bridgeId is invalid");
@@ -227,6 +326,7 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
     threadId,
     collapseId,
     notificationData,
+    liveActivity,
     deviceIds: [...deviceIds],
   };
 }
@@ -263,6 +363,46 @@ function assertFcmPayloadFits(body: SendNotificationRequest): void {
   }
 }
 
+function buildLiveActivityMessage(
+  body: SendNotificationRequest,
+  device: DeviceRegistrationDoc,
+  token: string
+): Message {
+  const live = body.liveActivity!;
+  const aps: Record<string, unknown> = {
+    timestamp: live.timestamp ?? Math.floor(Date.now() / 1000),
+    event: live.event,
+    "content-state": live.contentState,
+  };
+  if (live.event === "start") {
+    aps["attributes-type"] = live.attributesType;
+    aps.attributes = live.attributes ?? {};
+  }
+  if (live.staleDate !== undefined) {
+    aps["stale-date"] = live.staleDate;
+  }
+  if (live.dismissalDate !== undefined) {
+    aps["dismissal-date"] = live.dismissalDate;
+  }
+  if (live.alert?.title || live.alert?.body) {
+    aps.alert = {
+      ...(live.alert.title ? {title: live.alert.title} : {}),
+      ...(live.alert.body ? {body: live.alert.body} : {}),
+    };
+  }
+
+  return {
+    token: device.fcmToken,
+    apns: {
+      liveActivityToken: token,
+      headers: {
+        "apns-priority": live.event === "update" ? "5" : "10",
+      },
+      payload: {aps},
+    },
+  };
+}
+
 function isBadRequestMessage(message: string): boolean {
   return [
     "invalid",
@@ -271,6 +411,7 @@ function isBadRequestMessage(message: string): boolean {
     "too long",
     "must be",
     "reserved",
+    "liveActivity",
     "At least one target deviceId",
     "Request body must be a JSON object",
     "Relay does not process E2E keys",
@@ -461,6 +602,12 @@ export const registerToken = onRequest(OPTIONS, async (req, res) => {
           fcmToken: body.fcmToken,
           platform: body.platform,
           appVersion: body.appVersion ?? null,
+          liveActivityPushToStartToken: body.liveActivityPushToStartToken ??
+            existingDevice?.liveActivityPushToStartToken ??
+            null,
+          liveActivityPushToken: body.liveActivityPushToken ??
+            existingDevice?.liveActivityPushToken ??
+            null,
           subscriptionActive: body.subscriptionActive ?? existingDevice?.subscriptionActive ?? null,
           subscriptionUpdatedAt: body.subscriptionActive === undefined ?
             existingDevice?.subscriptionUpdatedAt ?? null :
@@ -703,6 +850,50 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       };
       if (body.imageUrl) {
         notification.imageUrl = body.imageUrl;
+      }
+
+      let liveActivityDelivered = false;
+      if (body.liveActivity && device.platform === "ios") {
+        const liveToken = body.liveActivity.event === "start" ||
+          body.liveActivity.tokenType === "push_to_start" ?
+          device.liveActivityPushToStartToken :
+          device.liveActivityPushToken;
+        if (liveToken) {
+          const liveResult = await sendPushWithRetry(
+            buildLiveActivityMessage(body, device, liveToken)
+          );
+          if (liveResult.messageId) {
+            liveActivityDelivered = true;
+            logger.info("sendNotification live activity sent", {
+              bridgeId: body.bridgeId,
+              deviceId: snapshot.id,
+              event: body.liveActivity.event,
+              tokenType: body.liveActivity.event === "start" ? "push_to_start" : "update",
+            });
+          } else {
+            logger.warn("sendNotification live activity failed", {
+              bridgeId: body.bridgeId,
+              deviceId: snapshot.id,
+              event: body.liveActivity.event,
+              errorCode: liveResult.errorCode,
+              errorMessage: liveResult.errorMessage,
+            });
+          }
+        }
+      }
+
+      if (liveActivityDelivered && body.liveActivity?.suppressStandardPush) {
+        sent++;
+        writeBatch.set(
+          snapshot.ref,
+          {
+            lastNotifiedAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+            expiresAt: Timestamp.fromDate(addDays(startedAt, TOKEN_TTL_DAYS.value())),
+          },
+          {merge: true}
+        );
+        continue;
       }
 
       const androidNotification: {
