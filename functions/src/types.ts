@@ -87,4 +87,13 @@ export interface SendNotificationRequest {
   liveActivity?: LiveActivityRequest;
   deviceId?: string;
   deviceIds?: string[];
+  repairRegistrations?: DeviceRepairRegistration[];
+}
+
+export interface DeviceRepairRegistration {
+  deviceId: string;
+  fcmToken: string;
+  platform: "ios" | "android" | "unknown";
+  appVersion?: string;
+  subscriptionActive?: boolean;
 }

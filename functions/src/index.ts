@@ -22,6 +22,7 @@ import {
 import {sendPushWithRetry} from "./fcm";
 import {
   BridgeRegistrationDoc,
+  DeviceRepairRegistration,
   DeviceRegistrationDoc,
   LiveActivityRequest,
   RegisterTokenRequest,
@@ -55,6 +56,7 @@ const RELAY_CLICK_ACTION = "FLUTTER_NOTIFICATION_CLICK";
 const RESERVED_NOTIFICATION_DATA_KEYS = new Set(["from"]);
 const RESERVED_NOTIFICATION_DATA_PREFIXES = ["google.", "gcm."];
 const LIVE_ACTIVITY_DATA_LIMIT_BYTES = 2048;
+const DEVICE_ID_PATTERN = /^[A-Za-z0-9._:-]{3,128}$/;
 
 /**
  * health returns a simple 200 OK for relay reachability checks.
@@ -87,10 +89,10 @@ function parseRegisterTokenBody(body: unknown): RegisterTokenRequest {
     undefined;
   const subscriptionActive = payload.subscriptionActive;
 
-  if (!/^[A-Za-z0-9._:-]{3,128}$/.test(bridgeId)) {
+  if (!DEVICE_ID_PATTERN.test(bridgeId)) {
     throw new Error("bridgeId is invalid");
   }
-  if (!/^[A-Za-z0-9._:-]{3,128}$/.test(deviceId)) {
+  if (!DEVICE_ID_PATTERN.test(deviceId)) {
     throw new Error("deviceId is invalid");
   }
   if (bridgeAuthToken.length < 24 || bridgeAuthToken.length > 512) {
@@ -129,6 +131,73 @@ function parseRegisterTokenBody(body: unknown): RegisterTokenRequest {
     liveActivityPushToken,
     subscriptionActive: subscriptionActive as boolean | undefined,
   };
+}
+
+function parseRepairRegistrations(
+  payload: Record<string, unknown>,
+  deviceIds: Set<string>
+): DeviceRepairRegistration[] | undefined {
+  const raw = payload.repairRegistrations;
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  if (!Array.isArray(raw)) {
+    throw new Error("repairRegistrations must be an array");
+  }
+  if (raw.length > MAX_BATCH_DEVICES.value()) {
+    throw new Error(`repairRegistrations exceeds max batch size of ${MAX_BATCH_DEVICES.value()}`);
+  }
+
+  const repairs = new Map<string, DeviceRepairRegistration>();
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error("repairRegistrations entries must be objects");
+    }
+    const registration = item as Record<string, unknown>;
+    if (hasForbiddenE2EFields(registration)) {
+      throw new Error("Relay does not accept E2E key material");
+    }
+
+    const deviceId = String(registration.deviceId ?? "").trim();
+    const fcmToken = String(registration.fcmToken ?? "").trim();
+    const platform = String(registration.platform ?? "unknown").trim().toLowerCase();
+    const appVersion = registration.appVersion ?
+      String(registration.appVersion).trim() :
+      undefined;
+    const subscriptionActive = registration.subscriptionActive;
+
+    if (!DEVICE_ID_PATTERN.test(deviceId)) {
+      throw new Error("repairRegistrations deviceId is invalid");
+    }
+    if (!deviceIds.has(deviceId)) {
+      throw new Error("repairRegistrations contains a non-target deviceId");
+    }
+    if (fcmToken.length < 24 || fcmToken.length > 4096) {
+      throw new Error("repairRegistrations fcmToken is invalid");
+    }
+    if (!["ios", "android", "unknown"].includes(platform)) {
+      throw new Error("repairRegistrations platform must be ios, android, or unknown");
+    }
+    if (appVersion && appVersion.length > 64) {
+      throw new Error("repairRegistrations appVersion is too long");
+    }
+    if (
+      subscriptionActive !== undefined &&
+      typeof subscriptionActive !== "boolean"
+    ) {
+      throw new Error("repairRegistrations subscriptionActive must be a boolean");
+    }
+
+    repairs.set(deviceId, {
+      deviceId,
+      fcmToken,
+      platform: platform as "ios" | "android" | "unknown",
+      appVersion,
+      subscriptionActive: subscriptionActive as boolean | undefined,
+    });
+  }
+
+  return [...repairs.values()];
 }
 
 function parseLiveActivity(raw: unknown): LiveActivityRequest | undefined {
@@ -236,7 +305,7 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
   const rawNotificationData = payload.notificationData;
   const liveActivity = parseLiveActivity(payload.liveActivity);
 
-  if (!/^[A-Za-z0-9._:-]{3,128}$/.test(bridgeId)) {
+  if (!DEVICE_ID_PATTERN.test(bridgeId)) {
     throw new Error("bridgeId is invalid");
   }
   if (!encryptedPayload) {
@@ -311,10 +380,12 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
   }
 
   for (const deviceId of deviceIds) {
-    if (!/^[A-Za-z0-9._:-]{3,128}$/.test(deviceId)) {
+    if (!DEVICE_ID_PATTERN.test(deviceId)) {
       throw new Error("deviceId is invalid");
     }
   }
+
+  const repairRegistrations = parseRepairRegistrations(payload, deviceIds);
 
   return {
     bridgeId,
@@ -328,7 +399,19 @@ function parseSendNotificationBody(body: unknown): SendNotificationRequest {
     notificationData,
     liveActivity,
     deviceIds: [...deviceIds],
+    repairRegistrations,
   };
+}
+
+function repairRegistrationsByDeviceId(
+  body: SendNotificationRequest
+): Map<string, DeviceRepairRegistration> {
+  return new Map(
+    (body.repairRegistrations ?? []).map((registration) => [
+      registration.deviceId,
+      registration,
+    ])
+  );
 }
 
 function estimateFcmDataBytes(data: Record<string, string>): number {
@@ -403,6 +486,37 @@ function buildLiveActivityMessage(
   };
 }
 
+function buildRepairedDeviceRegistration(
+  body: SendNotificationRequest,
+  bridge: BridgeRegistrationDoc,
+  registration: DeviceRepairRegistration,
+  existingDevice: DeviceRegistrationDoc | undefined,
+  now: Date
+): DeviceRegistrationDoc {
+  const timestamp = Timestamp.fromDate(now);
+  return {
+    bridgeId: body.bridgeId,
+    deviceId: registration.deviceId,
+    userId: existingDevice?.userId ?? bridge.userId,
+    appId: existingDevice?.appId ?? "bridge-repair",
+    fcmToken: registration.fcmToken,
+    platform: registration.platform,
+    appVersion: registration.appVersion ?? existingDevice?.appVersion ?? null,
+    liveActivityPushToStartToken: existingDevice?.liveActivityPushToStartToken ?? null,
+    liveActivityPushToken: existingDevice?.liveActivityPushToken ?? null,
+    subscriptionActive: registration.subscriptionActive ??
+      existingDevice?.subscriptionActive ??
+      null,
+    subscriptionUpdatedAt: registration.subscriptionActive === undefined ?
+      existingDevice?.subscriptionUpdatedAt ?? null :
+      timestamp,
+    createdAt: existingDevice?.createdAt ?? timestamp,
+    updatedAt: timestamp,
+    lastNotifiedAt: existingDevice?.lastNotifiedAt ?? null,
+    expiresAt: Timestamp.fromDate(addDays(now, TOKEN_TTL_DAYS.value())),
+  };
+}
+
 function isBadRequestMessage(message: string): boolean {
   return [
     "invalid",
@@ -415,7 +529,9 @@ function isBadRequestMessage(message: string): boolean {
     "At least one target deviceId",
     "Request body must be a JSON object",
     "Relay does not process E2E keys",
+    "Relay does not accept E2E key material",
     "FCM data payload exceeds",
+    "repairRegistrations",
   ].some((needle) => message.includes(needle));
 }
 
@@ -798,9 +914,11 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
     const targetSnapshots = await Promise.all(
       targetDeviceIds.map((deviceId) => devicesCollection.doc(deviceId).get())
     );
+    const repairByDeviceId = repairRegistrationsByDeviceId(body);
 
     let sent = 0;
     let failed = 0;
+    let repaired = 0;
     const errors: string[] = [];
     const deliveryFailures: Array<{
       deviceId: string;
@@ -817,17 +935,50 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
     const notificationBody = body.body ?? "New Frigate event";
 
     for (const snapshot of targetSnapshots) {
+      let device: DeviceRegistrationDoc | undefined = snapshot.exists ?
+        snapshot.data() as DeviceRegistrationDoc :
+        undefined;
+
       if (!snapshot.exists) {
+        const repair = repairByDeviceId.get(snapshot.id);
+        if (!repair) {
+          failed++;
+          errors.push(`${snapshot.id}: device not found`);
+          continue;
+        }
+        device = buildRepairedDeviceRegistration(body, bridge, repair, undefined, startedAt);
+        writeBatch.set(snapshot.ref, device, {merge: true});
+        repaired++;
+        logger.info("sendNotification repaired missing device registration", {
+          bridgeId: body.bridgeId,
+          deviceId: snapshot.id,
+          platform: device.platform,
+          appVersion: device.appVersion,
+        });
+      }
+
+      if (!device) {
         failed++;
         errors.push(`${snapshot.id}: device not found`);
         continue;
       }
 
-      const device = snapshot.data() as DeviceRegistrationDoc;
       if (device.expiresAt.toDate().getTime() < Date.now()) {
-        failed++;
-        errors.push(`${snapshot.id}: token expired`);
-        continue;
+        const repair = repairByDeviceId.get(snapshot.id);
+        if (!repair) {
+          failed++;
+          errors.push(`${snapshot.id}: token expired`);
+          continue;
+        }
+        device = buildRepairedDeviceRegistration(body, bridge, repair, device, startedAt);
+        writeBatch.set(snapshot.ref, device, {merge: true});
+        repaired++;
+        logger.info("sendNotification repaired expired device registration", {
+          bridgeId: body.bridgeId,
+          deviceId: snapshot.id,
+          platform: device.platform,
+          appVersion: device.appVersion,
+        });
       }
       if (device.subscriptionActive === false) {
         failed++;
@@ -996,6 +1147,7 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       requested: targetDeviceIds.length,
       sent,
       failed,
+      repaired,
       errors,
       deliveryFailures,
     });
@@ -1004,6 +1156,7 @@ export const sendNotification = onRequest(OPTIONS, async (req, res) => {
       requested: targetDeviceIds.length,
       sent,
       failed,
+      repaired,
       errorCount: errors.length,
       errors,
       failureSummaries: deliveryFailures.map((failure) => ({
